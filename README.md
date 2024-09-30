@@ -51,6 +51,3 @@ If you use HyperVehicle in any published work, please cite it using the BibTex r
 
 ## License
 HyperVehicle is licensed under [GPLv3](COPYING).
-
-## Test
-This is a test. This edit will be rolled back.
