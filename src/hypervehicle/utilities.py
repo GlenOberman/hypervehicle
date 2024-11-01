@@ -8,12 +8,118 @@ from tqdm import tqdm
 from art import tprint, art
 import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional, TYPE_CHECKING
+from hypervehicle.geometry.autodiff_alt import FloatWithSens
+import pyvista as pv
 
 if TYPE_CHECKING:
     from .vehicle import Vehicle
 
+def surface_to_arrays(
+    parametric_surface,
+    triangles_per_edge_r: int,
+    triangles_per_edge_s: int,
+    si: float = 1.0,
+    sj: float = 1.0,
+    mirror_y: bool = False,
+    i_clustering_func: callable = None,
+    j_clustering_func: callable = None,
+    verbosity=0,
+    sensitivities=False
+):
+    ni = triangles_per_edge_r
+    nj = triangles_per_edge_s
 
-def surfce_to_stl(
+    if verbosity > 1:
+        print(f"Triangles per edge: (ni, nj) = ({ni}, {nj})")
+
+    # TODO: Fix this up, currently deactivated
+    # Create list of vertices
+    if i_clustering_func:
+        r_list = [i_clustering_func(i) for i in np.linspace(0, 1, ni + 1)]
+    else:
+        r_list = default_vertex_func(lb=0.0, ub=1.0, steps=ni + 1, spacing=si)
+
+    if j_clustering_func:
+        s_list = [j_clustering_func(i) for i in np.linspace(0, 1, ni + 1)]
+    else:
+        s_list = default_vertex_func(lb=0.0, ub=1.0, steps=nj + 1, spacing=sj)
+
+    y_mult: int = -1 if mirror_y else 1
+
+# TODO: Deactivated with the above section, no need to list out these until then
+#    if verbosity > 1:
+#        print(f"r_list = {r_list}")
+#        print(f"s_list = {s_list}")
+
+    # For stl generation we split each cell into 4x triangles with indece [0, 3]
+    #   p01-------p11
+    #    | \  2  / |
+    #    |   \  /  |
+    #    | 3  pc 1 |
+    #    |   /  \  |
+    #    |  /  0  \ |
+    #   p00-------p10
+
+    N_corners = (ni+1) * (nj+1)
+    N_centres = (ni) * (nj)
+    #mesh_faces = [[3,i+(ni+1)*j,      i+(ni+1)*j+1,    i+ni*j+N_corners,
+    #               3,i+(ni+1)*j+1,    i+(ni+1)*(j+1)+1,i+ni*j+N_corners,
+    #               3,i+(ni+1)*(j+1)+1,i+(ni+1)*(j+1),  i+ni*j+N_corners,
+    #               3,i+(ni+1)*(j+1)  ,i+(ni+1)*j,      i+ni*j+N_corners] for j in range(nj) for i in range(ni)]
+    mesh_faces =            [[3,i+(ni+1)*j,      i+(ni+1)*j+1,    i+ni*j+N_corners] for j in range(nj) for i in range(ni)]
+    mesh_faces = mesh_faces+[[3,i+(ni+1)*j+1,    i+(ni+1)*(j+1)+1,i+ni*j+N_corners] for j in range(nj) for i in range(ni)]
+    mesh_faces = mesh_faces+[[3,i+(ni+1)*(j+1)+1,i+(ni+1)*(j+1),  i+ni*j+N_corners] for j in range(nj) for i in range(ni)]
+    mesh_faces = mesh_faces+[[3,i+(ni+1)*(j+1)  ,i+(ni+1)*j,      i+ni*j+N_corners] for j in range(nj) for i in range(ni)]
+
+
+
+    mesh_points = np.zeros(N_corners+N_centres,dtype=np.dtype((float,(3,))))
+    if sensitivities:
+        mesh_point_data = np.zeros(N_corners+N_centres,dtype=np.dtype((float,(3,FloatWithSens.N))))
+    else:
+        mesh_point_data = None
+
+    for j in range(nj+1):
+        for i in range(ni+1):
+            point = parametric_surface(r_list[i],s_list[j])
+            cornerpoint = np.array([point.x, y_mult * point.y, point.z])
+            mesh_points[i+(ni+1)*j] = cornerpoint
+            if sensitivities:
+                mesh_point_data[i+(ni+1)*j] = [cornerpoint[0].sens,cornerpoint[1].sens,cornerpoint[2].sens]
+    for j in range(nj):
+        for i in range(ni):
+            point = parametric_surface((r_list[i]+r_list[i+1])/2,(s_list[j]+s_list[j+1])/2)
+            centrepoint = np.array([point.x, y_mult * point.y, point.z])
+            mesh_points[i+ni*j+N_corners] = centrepoint
+            if sensitivities:
+                mesh_point_data[i+ni*j+N_corners] = [centrepoint[0].sens,centrepoint[1].sens,centrepoint[2].sens]
+
+    if sensitivities:
+        mesh_face_data = np.zeros(N_centres*4,dtype=np.dtype((float,(3,FloatWithSens.N,3))))
+        t=0
+        for quad in mesh_faces:
+            mesh_face_data[t]=[mesh_point_data[quad[1]],
+                                 mesh_point_data[quad[2]],
+                                 mesh_point_data[quad[3]]]
+            t+=1
+    else:
+        mesh_face_data = np.ones(4*N_centres,dtype=np.dtype(int))*y_mult
+
+    return mesh_points, mesh_faces, mesh_point_data, mesh_face_data
+    
+''' This function is not currently used - it may be useful later
+
+def vectors_and_sens(mesh_vecs,mesh_sens,point0,point1,pos_x,pos_y,pos_z, y_mult):
+    mesh_vecs[0] = np.array([point0.x, y_mult * point0.y, point0.z])
+    mesh_vecs[1] = np.array([point1.x, y_mult * point1.y, point1.z])
+    mesh_vecs[2] = np.array([pos_x, y_mult * pos_y, pos_z])
+    if isinstance(point0.x,FloatWithSens):
+        mesh_sens[0] = np.array([point0.x.sens, y_mult * point0.y.sens, point0.z.sens])
+        mesh_sens[1] = np.array([point1.x.sens, y_mult * point1.y.sens, point1.z.sens])
+        mesh_sens[2] = np.array([pos_x.sens, y_mult * pos_y.sens, pos_z.sens])'''
+
+
+def surface_to_stl(
     parametric_surface,
     triangles_per_edge_r: int,
     triangles_per_edge_s: int,
@@ -94,7 +200,8 @@ def surfce_to_stl(
     #   p00-------p10
 
     N_triangles = 4 * (ni) * (nj)
-    stl_mesh = mesh.Mesh(np.zeros(N_triangles, dtype=mesh.Mesh.dtype))
+    my_dtype = np.dtype([('normals', '<f8', (3,)), ('vectors', '<f8', (3,3)), ('attr', '<u4', (1,))])
+    stl_mesh = np.zeros(N_triangles, dtype=my_dtype)
 
     # mesh.vectors contains a list defining three corners of each triangle.
     t = 0
@@ -109,37 +216,35 @@ def surfce_to_stl(
             pos01 = parametric_surface(r_list[i], s_list[j + 1])
             pos11 = parametric_surface(r_list[i + 1], s_list[j + 1])
 
+            # TODO: This is producing flat quads, whereas you could generate
+            # centre points using parametric_surface for better surface geometry
             # Get centre for current cell (quad)
             pos_x = 0.25 * (pos00.x + pos10.x + pos01.x + pos11.x)
             pos_y = 0.25 * (pos00.y + pos10.y + pos01.y + pos11.y)
             pos_z = 0.25 * (pos00.z + pos10.z + pos01.z + pos11.z)
 
             # Add triangle 0 [p00, p10, pc]
-            stl_mesh.vectors[t][0] = np.array([pos00.x, y_mult * pos00.y, pos00.z])
-            stl_mesh.vectors[t][1] = np.array([pos10.x, y_mult * pos10.y, pos10.z])
-            stl_mesh.vectors[t][2] = np.array([pos_x, y_mult * pos_y, pos_z])
+            get_vectors(stl_mesh['vectors'][t],pos00,pos10,pos_x,pos_y,pos_z,y_mult)
             t += 1
 
             # Add triangle 1 [p10, p11, pc]
-            stl_mesh.vectors[t][0] = np.array([pos10.x, y_mult * pos10.y, pos10.z])
-            stl_mesh.vectors[t][1] = np.array([pos11.x, y_mult * pos11.y, pos11.z])
-            stl_mesh.vectors[t][2] = np.array([pos_x, y_mult * pos_y, pos_z])
+            get_vectors(stl_mesh['vectors'][t],pos10,pos11,pos_x,pos_y,pos_z,y_mult)
             t += 1
 
             # Add triangle 2 [p11, p01, pc]
-            stl_mesh.vectors[t][0] = np.array([pos11.x, y_mult * pos11.y, pos11.z])
-            stl_mesh.vectors[t][1] = np.array([pos01.x, y_mult * pos01.y, pos01.z])
-            stl_mesh.vectors[t][2] = np.array([pos_x, y_mult * pos_y, pos_z])
+            get_vectors(stl_mesh['vectors'][t],pos11,pos01,pos_x,pos_y,pos_z,y_mult)
             t += 1
 
             # Add triangle 3 [p01, p00, pc]
-            stl_mesh.vectors[t][0] = np.array([pos01.x, y_mult * pos01.y, pos01.z])
-            stl_mesh.vectors[t][1] = np.array([pos00.x, y_mult * pos00.y, pos00.z])
-            stl_mesh.vectors[t][2] = np.array([pos_x, y_mult * pos_y, pos_z])
+            get_vectors(stl_mesh['vectors'][t],pos01,pos00,pos_x,pos_y,pos_z,y_mult)
             t += 1
 
-    return stl_mesh
+    return mesh.Mesh(stl_mesh)
 
+def get_vectors(mesh_vecs,point0,point1,pos_x,pos_y,pos_z, y_mult):
+    mesh_vecs[0] = np.array([point0.x, y_mult * point0.y, point0.z])
+    mesh_vecs[1] = np.array([point1.x, y_mult * point1.y, point1.z])
+    mesh_vecs[2] = np.array([pos_x, y_mult * pos_y, pos_z])
 
 def default_vertex_func(lb, ub, steps, spacing=1.0):
     span = ub - lb

@@ -10,6 +10,7 @@ from hypervehicle.components.constants import (
     SWEPT_COMPONENT,
     REVOLVED_COMPONENT,
 )
+import pyvista as pv
 
 
 class Vehicle:
@@ -300,6 +301,76 @@ class Vehicle:
             # Reset any meshes generated from un-transformed patches
             component.surfaces = None
             component.mesh = None
+
+    def to_vtk(self, prefix: str = None, merge: Union[bool, List[str]] = False, binary: bool = True) -> None:
+        """Writes the vehicle components to STL file. If analysis results are
+        present, they will also be written to file, either as CSV, or using
+        the Numpy tofile method.
+
+        Parameters
+        ----------
+        prefix : str, optional
+            The prefix to use when saving components to STL. Note that if
+            components have been individually assigned name tags, the prefix
+            provided will take precedence. If no prefix is specified, and no
+            component name tag is available, the Vehicle name will be used.
+            The default is None.
+
+        merge : [bool, list[str]], optional
+            Merge components of the vehicle into a single STL file. The merge
+            argument can either be a boolean (with True indicating to merge all
+            components of the vehicle), or a list of the component names to
+            merge. This functionality depends on PyMesh. The default is False.
+
+        See Also
+        --------
+        utilities.merge_stls
+        """
+
+        if self.verbosity > 0:
+            s = "Writing vehicle components to VTK"
+            if prefix:
+                print(f"{s}, with prefix '{prefix}'.")
+            else:
+                print(f"{s}.")
+
+        types_generated = {}
+        for component in self.components:
+            # Get component count
+            no = types_generated.get(component.componenttype, 0)
+
+            # Write component to stl
+            if prefix:
+                # Use prefix provided
+                if component.name:
+                    vtk_name = f"{prefix}-{component.name}.vtk"
+                else:
+                    vtk_name = f"{prefix}-{component.componenttype}-{no}.vtk"
+            elif component.name:
+                vtk_name = f"{component.name}.vtk"
+            else:
+                # No prefix or component name, use vehicle name as fallback
+                vtk_name = f"{self.name}-{component.componenttype}-{no}.vtk"
+
+            if self.verbosity > 0:
+                print(f"  Writing: {vtk_name}                 ", end="\r")
+
+            component.to_vtk(vtk_name, binary=binary)
+
+            # Update component count
+            types_generated[component.componenttype] = no + 1
+
+        # Merge STL components
+        if merge:
+            mesh_pieces=[component.pv_mesh for component in self.components]
+            merged_mesh=mesh_pieces[0].copy()
+            for mesh in mesh_pieces[1:]:
+                merged_mesh=merged_mesh.boolean_union(mesh)
+            # Merge all components
+            merged_mesh.save(f"{prefix}-merged.vtk", binary=binary)
+
+        if self.verbosity > 0:
+            print("\rAll components written to VTK file format.", end="\n")
 
     def to_stl(self, prefix: str = None, merge: Union[bool, List[str]] = False) -> None:
         """Writes the vehicle components to STL file. If analysis results are

@@ -1,6 +1,7 @@
 from __future__ import annotations
 import numpy as np
 from typing import Union, Optional
+from hypervehicle.geometry.autodiff_alt import FloatWithSens
 
 
 class Vector3:
@@ -33,7 +34,7 @@ class Vector3:
             self._x = x.x
             self._y = x.y
             self._z = x.z
-        elif isinstance(x, (float, int)):
+        elif isinstance(x, (float, int, FloatWithSens)):
             self._x = x
             self._y = y if y is not None else 0.0
             self._z = z if z is not None else 0.0
@@ -162,7 +163,7 @@ class Vector3:
     @property
     def vec(self) -> np.array:
         """The vector represented as a Numpy array."""
-        non_none = [str(i) for i in [self._x, self._y, self._z] if i is not None]
+        non_none = [i for i in [self._x, self._y, self._z] if i is not None]
 
         return np.array([float(i) for i in non_none])
 
@@ -205,7 +206,7 @@ class Vector3:
     ):
         """Change the coordinates from the local right-handed (RH) system at point c."""
         new_x = self.x * n.x + self.y * t1.x + self.z * t2.x
-        new_y = self.x * n.y + self.y * t1.y + self.y * t2.y
+        new_y = self.x * n.y + self.y * t1.y + self.z * t2.y
         new_z = self.x * n.z + self.y * t1.z + self.z * t2.z
         if c is not None:
             new_x += c.x

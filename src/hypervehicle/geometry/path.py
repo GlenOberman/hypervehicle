@@ -52,6 +52,9 @@ class Line(Path):
             return Line(p0=p0, p1=p1)
         else:
             raise ValueError(f"Cannot add a {type(offset)} to a line.")
+        
+    def reversed(self):
+        return Line(self.p1,self.p0)
 
 
 class Bezier(Path):
@@ -80,6 +83,9 @@ class Bezier(Path):
             for i in range(n_order - k):
                 Q[i] = Q[i] * (1.0 - t) + Q[i + 1] * t
         return Q[0]
+    
+    def reversed(self):
+        return Bezier(self.B[::-1])
 
 
 class Polyline(Path):
@@ -140,8 +146,11 @@ class Polyline(Path):
         for seg in self.segments:
             L += seg.length()
         return L
-
-
+    
+    def reversed(self):
+        return Polyline([path.reversed() for path in self.segments])
+    
+    
 class Spline(Polyline):
     """Construct a spline of Bezier segments from a sequence of points."""
 
@@ -275,6 +284,9 @@ class Arc(Path):
         loc.transform_to_global_frame(tangent1, tangent2, n, self.c)
 
         return loc, l
+    
+    def reversed(self):
+        return Arc(self.b,self.a,self.c)
 
 
 class ArcLengthParameterizedPath(Path):

@@ -1,4 +1,4 @@
-import pymeshfix
+import pyvista as pv
 import numpy as np
 from stl import mesh
 from copy import deepcopy
@@ -8,14 +8,14 @@ from multiprocess.pool import Pool
 from typing import Callable, Union, Optional
 from hypervehicle.geometry.vector import Vector3
 from hypervehicle.geometry.surface import StructuredGrid, ParametricSurface
-from hypervehicle.utilities import surfce_to_stl
+from hypervehicle.utilities import surface_to_stl, surface_to_arrays
 from hypervehicle.geometry.geometry import (
     CurvedPatch,
     RotatedPatch,
     MirroredPatch,
     OffsetPatchFunction,
 )
-
+from hypervehicle.geometry.autodiff_alt import FloatWithSens
 
 class AbstractComponent:
     componenttype = None
@@ -115,8 +115,11 @@ class Component(AbstractComponent):
 
         # STL Attributes
         self.surfaces = None  # STL surfaces for each patch
+        self.pv_surfaces = None
         self.stl_resolution = stl_resolution  # STL cells per edge
+        self.pv_resolution = stl_resolution  # STL cells per edge
         self._mesh = None  # STL mesh for entire component
+        self._pv_mesh = None
 
         # Curvature functions
         self._curvatures = None
@@ -198,12 +201,125 @@ class Component(AbstractComponent):
 
             # Create nominal STL mesh
             self._mesh = mesh.Mesh(surface_data)
+            #self._mesh.sensitivities = surface_data['sensitivities']
 
         return self._mesh
 
     @mesh.setter
     def mesh(self, value):
         self._mesh = value
+
+    @property
+    def pv_mesh(self):
+        if not self._pv_mesh:
+            # Check for processed surfaces
+            if self.pv_surfaces is None:
+                if self.verbosity > 1:
+                    print(" Generating surfaces for component.")
+
+                # Generate surfaces
+                self.pv_surface(sens=FloatWithSens.N>0)
+
+            # Merge surfaces to create full mesh
+            surfs = [pv_surf for pv_surf in self.pv_surfaces.values()]
+            self._pv_mesh = surfs[0]
+            #surfs[0].plot_normals(mag=0.05,faces=True)
+            #pl = pv.Plotter()
+            #pl.add_mesh(surfs[0])
+
+            for surf in surfs[1:]:
+            #    pl.add_mesh(surf)
+                self._pv_mesh = self._pv_mesh.merge(surf, tolerance=1e-4)
+                #self._pv_mesh.plot_normals(mag=0.05,faces=True)
+            #pl.show()
+            #self._pv_mesh.fill_holes(1000, inplace=True)
+
+            #pl = pv.Plotter()
+            #pl.show_axes()
+            #pl.add_mesh(self._pv_mesh, scalars='ymult')
+            #pl.show()
+
+        return self._pv_mesh
+
+    @pv_mesh.setter
+    def pv_mesh(self, value):
+        self._pv_mesh = value
+
+    def pv_surface(self, resolution: int = None, sens: bool = False):
+        pv_resolution = self.pv_resolution if resolution is None else resolution
+
+        # Check for patches
+        if len(self.patches) == 0:
+            raise Exception(
+                "No patches have been generated. Please call .generate_patches()."
+            )
+
+        # Create case list
+        if isinstance(pv_resolution, int):
+            case_list = [
+                [k, patch, pv_resolution, pv_resolution, sens]
+                for k, patch in self.patches.items()
+            ]
+        else:
+            case_list = [
+                [k, patch, self.patch_res_r[k], self.patch_res_r[k], sens]
+                for k, patch in self.patches.items()
+            ]
+
+        # Prepare multiprocessing arguments iterable
+        def wrapper(key: str, patch: ParametricSurface, res_r: int, res_s: int, sens: bool):
+            points, faces, point_data, face_data = surface_to_arrays(
+                parametric_surface=patch,
+                triangles_per_edge_r=res_r,
+                triangles_per_edge_s=res_s,
+                sensitivities=sens,
+                **self._clustering,
+            )
+            return (key, points, faces, point_data, face_data)
+
+        self.pv_surfaces = {}
+        if self._multiprocess is True:
+            # Initialise surfaces and pool
+            pool = Pool()
+
+            # Submit tasks
+            for result in pool.starmap(wrapper, case_list):
+                self.pv_surfaces[result[0]] = pv.PolyData(result[1], result[2])
+                #self.pv_surfaces[result[0]].cell_data['ymult'] = result[4]
+                if result[3] is not None:
+                    t=0
+                    for param in FloatWithSens.params:
+                        self.pv_surfaces[result[0]].point_data['dvd'+param] = result[3][:,t]
+                        self.pv_surfaces[result[0]].cell_data['dvd'+param] = result[4][:,t,:]
+                        t+=1
+            print(f"  DONE: Creating pv for '{result[0]}'.")
+
+        else:
+            for case in case_list:
+                k = case[0]
+                pat = case[1]
+                print(f"START: Creating pv for '{k}'.")
+                result = wrapper(k, pat, case[2], case[3])
+                self.pv_surfaces[result[0]] = pv.PolyData(result[1], result[2])
+                if result[3] is not None:
+                    for i in range(len(FloatWithSens.params)):
+                        self.pv_surfaces[result[0]].point_data['dvd'+FloatWithSens.params[i]] = result[3][:,i]
+                        self.pv_surfaces[result[0]].cell_data['dvd'+FloatWithSens.params[i]] = result[4][:,i,:]
+                print(f"  DONE: Creating pv for '{k}'.")
+
+    def to_vtk(self,outfile: str = None, binary: bool = True):
+        if not self._ghost:
+            if self.verbosity > 1:
+                print("Writing patches to VTK format. ")
+                if outfile is not None:
+                    print(f"Output file = {outfile}.")
+
+            # Get mesh
+            pv_mesh = self.pv_mesh
+
+            if outfile is not None:
+                # Write STL to file
+                pv_mesh.save(outfile,binary=binary)
 
     def rotate(self, angle: float = 0, axis: str = "y"):
         for key, patch in self.patches.items():
@@ -279,7 +395,7 @@ class Component(AbstractComponent):
 
         # Prepare multiprocessing arguments iterable
         def wrapper(key: str, patch: ParametricSurface, res_r: int, res_s: int):
-            surface = surfce_to_stl(
+            surface = surface_to_stl(
                 parametric_surface=patch,
                 triangles_per_edge_r=res_r,
                 triangles_per_edge_s=res_s,
@@ -304,12 +420,6 @@ class Component(AbstractComponent):
                 result = wrapper(k, pat, case[2], case[3])
                 self.surfaces[result[0]] = result[1]
                 print(f"  DONE: Creating stl for '{k}'.")
-
-    def to_vtk(self):
-        raise NotImplementedError("This method has not been implemented yet.")
-        # TODO - check for processed grids
-        for key, grid in self.grids.items():
-            grid.write_to_vtk_file(f"{self.vtk_filename}-wing_{key}.vtk")
 
     def to_stl(self, outfile: str = None):
         if not self._ghost:

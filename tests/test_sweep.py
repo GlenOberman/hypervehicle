@@ -1,7 +1,7 @@
 import os
 import numpy as np
 from stl import Mesh
-from hypervehicle.utilities import surfce_to_stl
+from hypervehicle.utilities import surface_to_stl
 from hypervehicle.geometry import SweptPatch, CoonsPatch, Vector3
 
 
@@ -24,9 +24,9 @@ def test_sweep():
     # Create swept patch
     sections = [c1, c2]
     p = SweptPatch(sections)
-    s = surfce_to_stl(p, 20, 20)
-    s1 = surfce_to_stl(c1, 20, 20)
-    s2 = surfce_to_stl(c2, 20, 20)
+    s = surface_to_stl(p, 20, 20)
+    s1 = surface_to_stl(c1, 20, 20)
+    s2 = surface_to_stl(c2, 20, 20)
 
     # Get data and mesh
     stl_data = [s.data, s1.data, s2.data]
